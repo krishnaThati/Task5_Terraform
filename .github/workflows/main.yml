@@ -1,0 +1,65 @@
+name: Deploy Medusa Application
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up AWS CLI
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+
+    - name: Install Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.5.2
+
+    - name: Terraform Init
+      run: terraform init
+
+    - name: Terraform Apply
+      run: terraform apply -auto-approve
+
+    - name: Retrieve Public IP
+      id: get_public_ip
+      run: |
+        public_ip=$(terraform output -raw instance_public_ip)
+        echo "PUBLIC_IP=$public_ip" >> $GITHUB_ENV
+
+    - name: Build Docker image
+      run: |
+        docker build -t my-medusa-app .
+
+    - name: Save Docker image
+      run: |
+        docker save my-medusa-app -o medusa-app.tar
+
+    - name: Upload Docker image and Compose file to EC2
+      uses: scp-action@v1
+      with:
+        host: ${{ env.PUBLIC_IP }}
+        username: ec2-user
+        key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+        source: |
+          medusa-app.tar
+          docker-compose.yml
+        target: /home/ec2-user
+
+    - name: Run deployment script on EC2
+      run: |
+        ssh -i /tmp/id_rsa -o StrictHostKeyChecking=no ec2-user@${{ env.PUBLIC_IP }} << 'EOF'
+          sudo docker load -i /home/ec2-user/medusa-app.tar
+          cd /home/ec2-user
+          sudo docker-compose up -d
+        EOF
